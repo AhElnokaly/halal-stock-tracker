@@ -1,0 +1,20 @@
+name: Daily Halal Stock Update
+
+on:
+  schedule:
+    - cron: '30 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - run: pip install yfinance gspread pandas google-auth oauth2client numpy
+      - run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > /tmp/creds.json
+      - run: python update.py
+        env:
+          SPREADSHEET_ID: 1St7HrYmMsfqV5LgZRUm57JZxYopOP10cjS0oYPSC0UM
