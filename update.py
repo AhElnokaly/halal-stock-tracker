@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import yfinance as yf
 import pandas as pd
 from datetime import datetime
@@ -11,36 +12,37 @@ try:
     from curl_cffi import requests as cffi_requests
 except ImportError:
     print("جاري تثبيت curl_cffi...")
-    import subprocess
-    subprocess.run(["pip", "install", "curl_cffi", "-q"], check=True)
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "curl_cffi", "-q"])
     from curl_cffi import requests as cffi_requests
 
 # === إعداد الجلسة ===
 session = cffi_requests.Session(impersonate="chrome110")
-yf.pdr_override = lambda: None
 
-# === تحميل الـ Credentials ===
+# === تحميل الـ Credentials (GitHub Actions / Colab) ===
 creds = None
 
-# 1. في GitHub Actions → /tmp/creds.json
+# 1. GitHub Actions → /tmp/creds.json
 if os.path.exists('/tmp/creds.json'):
-    creds = Credentials.from_service_account_file('/tmp/creds.json', scopes=[
-        'https://www.googleapis.com/auth/spreadsheets',
-        'https://www.googleapis.com/auth/drive'
-    ])
+    creds = Credentials.from_service_account_file(
+        '/tmp/creds.json',
+        scopes=['https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive']
+    )
     print("تم تحميل الـ JSON من GitHub Actions")
 
-# 2. في Google Colab → من Google Drive
+# 2. Google Colab → من Google Drive
 elif 'google.colab' in str(get_ipython()):
     try:
         from google.colab import drive
         drive.mount('/content/drive')
-        json_path = '/content/drive/MyDrive/stock-tracker-2025-c2e6fce3f1a7.json'  # غيّر المسار لو حابب
+        json_path = '/content/drive/MyDrive/stock-tracker-2025-c2e6fce3f1a7.json'
         if os.path.exists(json_path):
-            creds = Credentials.from_service_account_file(json_path, scopes=[
-                'https://www.googleapis.com/auth/spreadsheets',
-                'https://www.googleapis.com/auth/drive'
-            ])
+            creds = Credentials.from_service_account_file(
+                json_path,
+                scopes=['https://www.googleapis.com/auth/spreadsheets',
+                        'https://www.googleapis.com/auth/drive']
+            )
             print("تم تحميل الـ JSON من Google Drive (Colab)")
         else:
             raise FileNotFoundError(f"الملف غير موجود: {json_path}")
@@ -48,9 +50,8 @@ elif 'google.colab' in str(get_ipython()):
         print(f"خطأ في تحميل JSON من Drive: {e}")
         raise
 
-# إذا مفيش أي مصدر → خطأ
 if creds is None:
-    raise FileNotFoundError("لم يتم العثور على ملف creds.json في /tmp أو Google Drive")
+    raise FileNotFoundError("لم يتم العثور على ملف creds.json")
 
 # === الاتصال بجوجل شيت ===
 client = gspread.authorize(creds)
@@ -58,43 +59,44 @@ spreadsheet_id = '1St7HrYmMsfqV5LgZRUm57JZxYopOP10cjS0oYPSC0UM'
 sh = client.open_by_key(spreadsheet_id)
 sheet = sh.sheet1
 
-# === قائمة العطلات الرسمية في مصر 2025 ===
-EGYPT_HOLIDAYS_2025 = [
-    "2025-01-07", "2025-01-25", "2025-04-20", "2025-04-21",
-    "2025-05-01", "2025-06-30", "2025-07-01", "2025-07-23",
-    "2025-09-27", "2025-10-06"
-]
+# ------------------------------------------------------------------
+# 1. احتفظ بالعناوين فقط + احذف كل البيانات القديمة
+# ------------------------------------------------------------------
+def clear_old_data():
+    all_vals = sheet.get_all_values()
+    if len(all_vals) <= 1:                     # لا يوجد بيانات سوى العناوين
+        return
 
-today = datetime.now().date()
-today_str = today.strftime('%Y-%m-%d')
-
-# === التحقق: من الأحد إلى الخميس فقط + لا عطلة رسمية ===
-if today.weekday() >= 5:
-    print(f"اليوم {today} هو جمعة أو سبت → لا يوجد تداول.")
-    raise SystemExit("خارج أيام العمل.")
-
-if today_str in EGYPT_HOLIDAYS_2025:
-    print(f"اليوم {today} عطلة رسمية → لا يوجد تداول.")
-    raise SystemExit("عطلة رسمية.")
-
-print(f"اليوم {today} ضمن أيام العمل → جاري التحديث...")
-
-# === تنظيف الشيت لو أكتر من 1000 صف ===
-rows = len(sheet.get_all_values())
-if rows > 1000:
-    print(f"عدد الصفوف = {rows} → سيتم حذف {rows - 1000} صفوف قديمة.")
-    keep = 1000
-    delete_count = rows - keep
+    # احذف كل الصفوف من الصف 2 إلى نهاية الشيت
+    rows_to_delete = len(all_vals) - 1
     try:
-        sheet.delete_rows(2, 2 + delete_count - 1)
-        print("تم تنظيف الشيت بنجاح (دفعة واحدة).")
+        # حذف جماعي (أسرع)
+        sheet.delete_rows(2, 2 + rows_to_delete - 1)
+        print(f"تم حذف {rows_to_delete} صفوف قديمة.")
     except Exception as e:
         print(f"فشل الحذف الجماعي: {e}")
-        for _ in range(min(delete_count, 100)):
+        # fallback: حذف صفًا صفًا (بحد أقصى 100 صف لتجنب الـ timeout)
+        for _ in range(min(rows_to_delete, 100)):
             sheet.delete_rows(2)
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-# === قاموس الأسماء بالعربي ===
+clear_old_data()
+
+# ------------------------------------------------------------------
+# 2. ضع العناوين الجديدة (مع السيولة، الدعم، المقاومة)
+# ------------------------------------------------------------------
+headers = ['التاريخ والوقت', 'اسم السهم', 'الرمز', 'السعر (ج.م)', 'التغيير (ج.م)', 'التغيير %', 
+           'السيولة (حجم)', 'الدعم (Support)', 'المقاومة (Resistance)']
+if sheet.row_values(1) != headers:
+    sheet.update('A1:I1', [headers])
+    sheet.format("A1:I1", {"textFormat": {"bold": True}})
+    print("تم إضافة/تحديث العناوين (مع الإضافات الجديدة).")
+else:
+    print("العناوين موجودة مسبقًا.")
+
+# ------------------------------------------------------------------
+# 3. قاموس الأسماء بالعربي
+# ------------------------------------------------------------------
 STOCK_NAMES_AR = {
     'ADIB.CA': 'بنك أبوظبي الإسلامي',
     'SAUD.CA': 'البنك السعودي للاستثمار',
@@ -117,25 +119,27 @@ STOCK_NAMES_AR = {
     'AJWA.CA': 'أجوا',
     'SPMD.CA': 'سبيد ميديكال'
 }
-
 stocks = list(STOCK_NAMES_AR.keys())
 update_time = datetime.now().strftime('%Y-%m-%d %H:%M')
 new_rows = []
 skipped_stocks = []
 
-print("\nجاري جلب الأسعار...")
+print("\nجاري جلب الأسعار والسيولة والدعم/المقاومة...")
 
 for symbol in stocks:
     try:
         ticker = yf.Ticker(symbol, session=session)
-        hist = ticker.history(period="5d", timeout=15)
+        # جلب تاريخ شهر كامل للدعم/المقاومة، ويومين للسعر الحالي
+        hist_month = ticker.history(period="1mo", interval="1d", timeout=15)
+        hist_day = ticker.history(period="2d", interval="1d", timeout=15)
 
-        if hist.empty:
-            raise ValueError("لا توجد بيانات")
+        if hist_month.empty or len(hist_month) < 5 or hist_day.empty:
+            raise ValueError("بيانات غير كافية")
 
-        latest = hist.iloc[-1]
+        # السعر الحالي والتغيير
+        latest = hist_day.iloc[-1]
         close = latest['Close']
-        open_p = latest['Open']
+        open_p = hist_day.iloc[0]['Open']  # افتتاح اليوم الأول في الفترة
 
         if pd.isna(close) or pd.isna(open_p) or close <= 0:
             raise ValueError("قيم غير صالحة")
@@ -143,32 +147,34 @@ for symbol in stocks:
         price = round(float(close), 2)
         change = round(float(close - open_p), 2)
         pct = round(float((close - open_p) / open_p * 100), 2)
+
+        # السيولة: حجم التداول اليومي الأخير
+        volume = latest['Volume'] if not pd.isna(latest['Volume']) else hist_day.iloc[-2]['Volume']
+        volume = int(volume) if not pd.isna(volume) else 0
+
+        # الدعم: أدنى سعر في الشهر (Low min)
+        support = round(float(hist_month['Low'].min()), 2)
+
+        # المقاومة: أعلى سعر في الشهر (High max)
+        resistance = round(float(hist_month['High'].max()), 2)
+
         arabic_name = STOCK_NAMES_AR.get(symbol, symbol)
 
-        new_rows.append([update_time, arabic_name, symbol, price, change, pct])
-        print(f"{symbol} - {arabic_name}: {price} ج.م ({pct:+.2f}%)")
+        new_rows.append([update_time, arabic_name, symbol, price, change, pct, volume, support, resistance])
+        print(f"{symbol} - {arabic_name}: سعر {price} ج.م | سيولة {volume:,} | دعم {support} | مقاومة {resistance} ({pct:+.2f}%)")
 
     except Exception as e:
         skipped_stocks.append(symbol)
-        print(f"{symbol}: تم تخطيه (غير متاح)")
+        print(f"{symbol}: تم تخطيه → {e}")
 
-    time.sleep(1.5)
+    time.sleep(1.5)   # لتجنب الحظر
 
-# === إضافة العناوين ===
-headers = ['التاريخ والوقت', 'اسم السهم', 'الرمز', 'السعر (ج.م)', 'التغيير (ج.م)', 'التغيير %']
-current_headers = sheet.row_values(1)
-
-if not current_headers or current_headers != headers:
-    if current_headers:
-        sheet.delete_rows(1)
-    sheet.insert_row(headers, 1)
-    sheet.format("A1:F1", {"textFormat": {"bold": True}})
-    print("تم إضافة/تحديث العناوين.")
-
-# === إضافة البيانات ===
+# ------------------------------------------------------------------
+# 4. إضافة البيانات الجديدة (آخر تحديث فقط)
+# ------------------------------------------------------------------
 if new_rows:
     sheet.append_rows(new_rows, value_input_option='RAW')
-    print(f"\nتم إضافة {len(new_rows)} سهم متاح بنجاح!")
+    print(f"\nتم إضافة {len(new_rows)} سهم (مع السيولة، الدعم، المقاومة)!")
 else:
     print("\nتحذير: لا توجد أسهم متاحة اليوم.")
 
